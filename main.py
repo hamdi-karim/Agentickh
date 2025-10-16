@@ -7,6 +7,7 @@ from functions.get_files_info import schema_get_files_info
 from functions.get_file_content import schema_get_file_content
 from functions.run_python_file import schema_run_python_file
 from functions.write_file import schema_write_file
+from functions.call_function import call_function
 
 load_dotenv()
 api_key = os.environ.get("GEMINI_API_KEY")
@@ -70,7 +71,15 @@ def main():
         print(response.text)
     else:
         function_call_part = response.function_calls[0]
-        print(f"Calling function: {function_call_part.name}({function_call_part.args})")
+        function_call_result = call_function(function_call_part, verbose=verbose)
+
+        # Validate the structure
+        parts = function_call_result.parts
+        if not parts or not hasattr(parts[0], "function_response"):
+            raise Exception("Function call returned invalid content")
+
+        if verbose:
+            print(f"-> {parts[0].function_response.response}")
 
     # Print verbose info only if flag is set
     if verbose:
