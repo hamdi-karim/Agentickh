@@ -14,6 +14,7 @@ api_key = os.environ.get("GEMINI_API_KEY")
 # Creating a new instance of Gemini Client
 client = genai.Client(api_key=api_key)
 model_name = "gemini-2.0-flash-001"
+MAX_STEPS = 20
 
 
 def main():
@@ -33,16 +34,16 @@ def main():
     prompt = " ".join(args)
 
     system_prompt = """
-        You are a helpful AI coding agent.
+        You are a helpful AI coding agent working in the current repository.
+        When asked about “the calculator”, assume it refers to files under ./calculator/.
+        Typical files: ./calculator/main.py, ./calculator/pkg/calculator.py, ./calculator/pkg/render.py.
+        Use tools to:
+        1) list files (start with ./ and subdirs),
+        2) read relevant files,
+        3) execute python files when needed,
+        4) then answer.
 
-        When a user asks a question or makes a request, make a function call plan. You can perform the following operations:
-
-        - List files and directories
-        - Read file contents
-        - Execute Python files with optional arguments
-        - Write or overwrite files
-
-        All paths you provide should be relative to the working directory. You do not need to specify the working directory in your function calls as it is automatically injected for security reasons.
+        Prefer making function calls before giving a final answer. Paths are relative to the working directory.
     """
 
     messages = [
@@ -58,35 +59,65 @@ def main():
         ]
     )
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=messages,
-        config=types.GenerateContentConfig(
-            tools=[available_functions], system_instruction=system_prompt
-        ),
-    )
+    for step in range(MAX_STEPS):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=messages,
+                config=types.GenerateContentConfig(
+                    tools=[available_functions], system_instruction=system_prompt
+                ),
+            )
 
-    # Always print the model's response text
-    if len(response.function_calls) == 0:
-        print(response.text)
+            # 1) Append assistant candidates immediately (keeps full trace)
+            if getattr(response, "candidates", None):
+                for cand in response.candidates:
+                    if hasattr(cand, "content") and cand.content:
+                        messages.append(cand.content)
+
+            # 2) If the model requested tool calls, run them, append results, and continue.
+            if getattr(response, "function_calls", None):
+                for fc in response.function_calls:
+                    function_call_result = call_function(fc, verbose=verbose)
+
+                    parts = getattr(function_call_result, "parts", None)
+                    if not parts or not hasattr(parts[0], "function_response"):
+                        raise ValueError(
+                            "Invalid function result: missing function_response in parts[0]"
+                        )
+
+                    if verbose:
+                        fr = parts[0].function_response
+                        print(
+                            f"-> function_response (tool={getattr(fr, 'name', 'unknown')}): {getattr(fr, 'response', fr)}"
+                        )
+
+                    # Append tool result back as a *user* message so the model can continue reasoning
+                    messages.append(types.Content(role="user", parts=parts))
+
+                # IMPORTANT: let the model take another step before printing any text
+                continue
+
+            # 3) No tool calls this turn: if final text exists, print and stop.
+            if getattr(response, "text", None):
+                print(response.text)
+                if verbose and hasattr(response, "usage_metadata"):
+                    print("\n--- VERBOSE OUTPUT ---")
+                    print(f"Prompt: {prompt}")
+                    print(
+                        f"Prompt tokens: {response.usage_metadata.prompt_token_count}"
+                    )
+                    print(
+                        f"Response tokens: {response.usage_metadata.candidates_token_count}"
+                    )
+                break
+
+            # If neither function_calls nor text were provided, loop continues to next step.
+        except Exception as e:
+            # Per-iteration protection: log and continue to next step
+            print(f"[WARN] Step {step+1} failed: {e}")
     else:
-        function_call_part = response.function_calls[0]
-        function_call_result = call_function(function_call_part, verbose=verbose)
-
-        # Validate the structure
-        parts = function_call_result.parts
-        if not parts or not hasattr(parts[0], "function_response"):
-            raise Exception("Function call returned invalid content")
-
-        if verbose:
-            print(f"-> {parts[0].function_response.response}")
-
-    # Print verbose info only if flag is set
-    if verbose:
-        print("\n--- VERBOSE OUTPUT ---")
-        print(f"User prompt: {prompt}")
-        print(f"Prompt tokens: {response.usage_metadata.prompt_token_count}")
-        print(f"Response tokens: {response.usage_metadata.candidates_token_count}")
+        print("Reached the maximum of 20 iterations without final text.")
 
 
 if __name__ == "__main__":
