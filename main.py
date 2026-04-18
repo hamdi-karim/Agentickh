@@ -18,10 +18,6 @@ MAX_STEPS = 20
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("ERROR - Usage: uv run main.py '<your prompt here>' [--verbose]")
-        sys.exit(1)
-
     # Extract args and check for --verbose
     args = sys.argv[1:]
     verbose = False
@@ -30,8 +26,11 @@ def main():
         verbose = True
         args.remove("--verbose")
 
-    # Build the prompt string
-    prompt = " ".join(args)
+    # Build the prompt string, use default if none provided
+    if not args:
+        prompt = "Say hello and mention this is a default prompt."
+    else:
+        prompt = " ".join(args)
 
     system_prompt = """
         You are a helpful AI coding agent working in the current repository.
@@ -100,16 +99,19 @@ def main():
 
             # 3) No tool calls this turn: if final text exists, print and stop.
             if getattr(response, "text", None):
+                usage = getattr(response, "usage_metadata", None)
+                if usage is None:
+                    raise RuntimeError(
+                        "Missing usage_metadata on response; request may have failed."
+                    )
+
+                print(f"Prompt tokens: {usage.prompt_token_count}")
+                print(f"Response tokens: {usage.candidates_token_count}")
                 print(response.text)
-                if verbose and hasattr(response, "usage_metadata"):
+
+                if verbose:
                     print("\n--- VERBOSE OUTPUT ---")
                     print(f"Prompt: {prompt}")
-                    print(
-                        f"Prompt tokens: {response.usage_metadata.prompt_token_count}"
-                    )
-                    print(
-                        f"Response tokens: {response.usage_metadata.candidates_token_count}"
-                    )
                 break
 
             # If neither function_calls nor text were provided, loop continues to next step.
